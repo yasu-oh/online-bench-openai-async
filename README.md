@@ -16,7 +16,7 @@
 依存は `openai` のみです。
 
 ```bash
-git clone https://github.com/<your-username>/online-bench-openai-async.git
+git clone https://github.com/yasu-oh/online-bench-openai-async.git
 cd online-bench-openai-async
 pip install openai
 ```
