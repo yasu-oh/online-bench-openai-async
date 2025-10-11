@@ -31,7 +31,7 @@ OpenAI互換エンドポイント（例：vLLMサーバやOpenAI API）に対し
 python online_bench_openai_async.py \
   --api-base http://127.0.0.1:8000/v1 \
   --api-key vllm \
-  --model qwen2.5-32b-instruct \
+  --model openai/gpt-oss-20b \
   --concurrency 128 \
   --total-requests 1024 \
   --prompt-tokens 1024 \
@@ -77,7 +77,7 @@ Avg latency: 893.4 ms
 === Benchmark Configuration ===
      api_base: http://127.0.0.1:8000/v1
       api_key: vllm
-        model: qwen2.5-32b-instruct
+        model: openai/gpt-oss-20b
    concurrency: 128
  total_requests: 1024
  prompt_tokens: 1024
