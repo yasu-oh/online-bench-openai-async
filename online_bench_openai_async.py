@@ -155,6 +155,7 @@ async def main():
     if elapsed > 0:
         print(f"Req/s: {n/elapsed:.2f}")
         print(f"Generated tokens/s: {out_tok/elapsed:.2f}")
+        print(f"Generated tokens/s/user: {out_tok/elapsed/args.concurrency:.2f}")
         print(f"Total tokens/s (in+out): {(in_tok+out_tok)/elapsed:.2f}")
 
     if n > 0:
