@@ -1,8 +1,12 @@
-import argparse, asyncio, time, random
+import argparse
+import asyncio
+import time
+import random
 from statistics import mean
 from openai import AsyncOpenAI
 from typing import List, Tuple
 
+# === ユーティリティ関数 ===
 def make_prompt(prompt_tokens: int) -> str:
     base = "You are a helpful assistant. "
     s = base + "Please answer concisely about: "
@@ -12,16 +16,29 @@ def make_prompt(prompt_tokens: int) -> str:
         "PagedAttention vs standard attention.",
         "KV cache sizing and throughput trade-offs."
     ]
-    # 長さは厳密ではない（OpenAI互換APIはトークン化情報をusageで返してくれる）
     while len(s.split()) < prompt_tokens:
         s += random.choice(topics) + " "
     return s.strip()
 
+# === ジョブキュー管理 ===
+class JobQueueManager:
+    def __init__(self, total_requests: int):
+        self.queue = asyncio.Queue()
+        for i in range(total_requests):
+            self.queue.put_nowait(i)
+
+    async def join(self):
+        await self.queue.join()
+
+    def task_done(self):
+        self.queue.task_done()
+
+# === ワーカー処理 ===
 async def worker(
     client: AsyncOpenAI,
     model: str,
     sem: asyncio.Semaphore,
-    jobq: asyncio.Queue,
+    job_manager: JobQueueManager,
     prompt_tokens: int,
     output_tokens: int,
     results: List[Tuple[float, int, int]],
@@ -29,7 +46,7 @@ async def worker(
 ):
     while True:
         try:
-            _ = jobq.get_nowait()
+            _ = job_manager.queue.get_nowait()
         except asyncio.QueueEmpty:
             break
 
@@ -42,7 +59,7 @@ async def worker(
                     messages=[{"role": "user", "content": prompt}],
                     temperature=0.0,
                     max_tokens=output_tokens,
-                    extra_body={"best_of": 1},  # vLLM特有の拡張も渡せる
+                    extra_body={"best_of": 1},
                 )
                 t1 = time.perf_counter()
             usage = getattr(rsp, "usage", None)
@@ -52,8 +69,9 @@ async def worker(
         except Exception as e:
             errors.append(str(e))
         finally:
-            jobq.task_done()
+            job_manager.task_done()
 
+# === 進捗表示 ===
 async def progress_printer(
     total: int,
     results: List[Tuple[float, int, int]],
@@ -61,7 +79,6 @@ async def progress_printer(
     start_time: float,
     interval_sec: float = 1.0,
 ):
-    # 1秒毎に進捗を上書き表示
     last_line_len = 0
     while True:
         await asyncio.sleep(interval_sec)
@@ -85,14 +102,94 @@ async def progress_printer(
             f"Errors: {len(errors)} | "
             f"ETA: {eta:6.1f}s"
         )
-        # 以前の行を上書きするためにスペースでパディング
         pad = " " * max(0, last_line_len - len(line))
         print("\r" + line + pad, end="", flush=True)
         last_line_len = len(line)
         if done >= total:
-            print()  # 改行
+            print()
             return
 
+# === ベンチマーク実行ロジック ===
+async def run_benchmark(
+    api_base: str,
+    api_key: str,
+    model: str,
+    concurrency: int,
+    total_requests: int,
+    prompt_tokens: int,
+    output_tokens: int,
+):
+    client = AsyncOpenAI(base_url=api_base, api_key=api_key)
+    sem = asyncio.Semaphore(concurrency)
+    results: List[Tuple[float, int, int]] = []
+    errors: List[str] = []
+
+    job_manager = JobQueueManager(total_requests)
+
+    # ウォームアップ
+    await client.chat.completions.create(
+        model=model,
+        messages=[{"role": "user", "content": "Warmup"}],
+        temperature=0.0,
+        max_tokens=8,
+    )
+
+    # ワーカー起動
+    tasks = [
+        asyncio.create_task(
+            worker(
+                client, model, sem, job_manager,
+                prompt_tokens, output_tokens,
+                results, errors
+            )
+        )
+        for _ in range(concurrency)
+    ]
+
+    t0 = time.perf_counter()
+    prog_task = asyncio.create_task(
+        progress_printer(total_requests, results, errors, t0)
+    )
+
+    await job_manager.join()
+    await asyncio.gather(*tasks, return_exceptions=True)
+    await prog_task
+
+    # 結果集計
+    t1 = time.perf_counter()
+    elapsed = t1 - t0
+    lat = [r[0] for r in results]
+    in_tok = sum(r[1] for r in results)
+    out_tok = sum(r[2] for r in results)
+    n = len(results)
+
+    # 出力
+    print(f"Requests (ok/err): {n}/{len(errors)}  Concurrency: {concurrency}  Elapsed: {elapsed:.3f}s")
+    if elapsed > 0:
+        print(f"Req/s: {n/elapsed:.2f}")
+        print(f"Generated tokens/s: {out_tok/elapsed:.2f}")
+        print(f"Generated tokens/s/user: {out_tok/elapsed/concurrency:.2f}")
+        print(f"Total tokens/s (in+out): {(in_tok+out_tok)/elapsed:.2f}")
+
+    if n > 0:
+        lat_sorted = sorted(lat)
+        p50 = lat_sorted[int(0.50 * (n - 1))] * 1000
+        p95 = lat_sorted[int(0.95 * (n - 1))] * 1000
+        print(f"p50 latency: {p50:.1f} ms")
+        print(f"p95 latency: {p95:.1f} ms")
+        print(f"Avg latency: {mean(lat)*1000:.1f} ms")
+
+    if errors:
+        print(f"\nFirst 3 errors (of {len(errors)}):")
+        for e in errors[:3]:
+            print(f"  - {e}")
+
+    print("\n=== Benchmark Configuration ===")
+    for k, v in locals().items():
+        if k in ["api_base", "api_key", "model", "concurrency", "total_requests", "prompt_tokens", "output_tokens"]:
+            print(f"{k:>15}: {v}")
+
+# === メイン関数 ===
 async def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--api-base", default="http://127.0.0.1:8000/v1")
@@ -104,79 +201,18 @@ async def main():
     ap.add_argument("--output-tokens", type=int, default=1024)
     args = ap.parse_args()
 
-    client = AsyncOpenAI(base_url=args.api_base, api_key=args.api_key)
-    sem = asyncio.Semaphore(args.concurrency)
-    results: List[Tuple[float, int, int]] = []
-    errors: List[str] = []
+    if args.prompt_tokens <= 0 or args.output_tokens <= 0:
+        raise ValueError("prompt_tokens and output_tokens must be positive.")
 
-    # ジョブキュー（総リクエスト数を厳密制御）
-    jobq: asyncio.Queue = asyncio.Queue()
-    for i in range(args.total_requests):
-        jobq.put_nowait(i)
-
-    # ウォームアップ1本（計測対象外）
-    await client.chat.completions.create(
+    await run_benchmark(
+        api_base=args.api_base,
+        api_key=args.api_key,
         model=args.model,
-        messages=[{"role": "user", "content": "Warmup"}],
-        temperature=0.0,
-        max_tokens=8,
+        concurrency=args.concurrency,
+        total_requests=args.total_requests,
+        prompt_tokens=args.prompt_tokens,
+        output_tokens=args.output_tokens,
     )
-
-    # ワーカー起動
-    tasks = [
-        asyncio.create_task(
-            worker(
-                client, args.model, sem, jobq,
-                args.prompt_tokens, args.output_tokens,
-                results, errors
-            )
-        )
-        for _ in range(args.concurrency)
-    ]
-
-    t0 = time.perf_counter()
-    prog_task = asyncio.create_task(
-        progress_printer(args.total_requests, results, errors, t0)
-    )
-
-    await jobq.join()     # すべてのジョブ消化を待つ
-    await asyncio.gather(*tasks, return_exceptions=True)
-    await prog_task       # 進捗表示終了
-
-    t1 = time.perf_counter()
-    elapsed = t1 - t0
-    lat = [r[0] for r in results]
-    in_tok = sum(r[1] for r in results)
-    out_tok = sum(r[2] for r in results)
-    n = len(results)
-
-    # サマリ
-    print(f"Requests (ok/err): {n}/{len(errors)}  Concurrency: {args.concurrency}  Elapsed: {elapsed:.3f}s")
-    if elapsed > 0:
-        print(f"Req/s: {n/elapsed:.2f}")
-        print(f"Generated tokens/s: {out_tok/elapsed:.2f}")
-        print(f"Generated tokens/s/user: {out_tok/elapsed/args.concurrency:.2f}")
-        print(f"Total tokens/s (in+out): {(in_tok+out_tok)/elapsed:.2f}")
-
-    if n > 0:
-        lat_sorted = sorted(lat)
-        p50 = lat_sorted[int(0.50 * (n - 1))] * 1000
-        p95 = lat_sorted[int(0.95 * (n - 1))] * 1000
-        print(f"p50 latency: {p50:.1f} ms")
-        print(f"p95 latency: {p95:.1f} ms")
-        print(f"Avg latency: {mean(lat)*1000:.1f} ms")
-
-    # 失敗例がある場合は先頭数件だけ表示（冗長回避）
-    if errors:
-        print(f"\nFirst 3 errors (of {len(errors)}):")
-        for e in errors[:3]:
-            print(f"  - {e}")
-
-    # === 設定出力 ===
-    print("\n=== Benchmark Configuration ===")
-    for k, v in vars(args).items():
-        print(f"{k:>15}: {v}")
-
 
 if __name__ == "__main__":
     asyncio.run(main())
