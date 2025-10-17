@@ -64,15 +64,15 @@ python online_bench_openai_async.py \
 ## 出力例
 
 ```
-Progress: 1024/1024 (100.0%) | RPS(avg): 114.32 | Gen tok/s: 92755.13 | Total tok/s: 189334.42 | Errors: 0 | ETA:   0.0s
-
-Requests (ok/err): 1024/0  Concurrency: 128  Elapsed: 8.954s
-Req/s: 114.32
-Generated tokens/s: 92755.13
-Total tokens/s (in+out): 189334.42
-p50 latency: 911.3 ms
-p95 latency: 1284.2 ms
-Avg latency: 893.4 ms
+Progress: 1024/1024 (100.0%) | RPS(avg):  14.30 | Gen tok/s: 14546.59 | Total tok/s: 40441.08 | Errors: 0 | ETA:    0.0s
+Requests (ok/err): 1024/0  Concurrency: 128  Elapsed: 71.617s
+Req/s: 14.30
+Generated tokens/s: 14546.51
+Generated tokens/s/user: 113.64
+Total tokens/s (in+out): 40440.86
+p50 latency: 8913.4 ms
+p95 latency: 9258.3 ms
+Avg latency: 8659.9 ms
 
 === Benchmark Configuration ===
      api_base: http://127.0.0.1:8000/v1
