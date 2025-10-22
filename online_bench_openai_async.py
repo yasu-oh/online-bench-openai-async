@@ -6,6 +6,9 @@ from statistics import mean
 from openai import AsyncOpenAI
 from typing import List, Tuple
 
+# === seed固定 ===
+random.seed(42)
+
 # === ユーティリティ関数 ===
 def make_prompt(prompt_tokens: int) -> str:
     base = "You are a helpful assistant. "
