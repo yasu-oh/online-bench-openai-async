@@ -5,6 +5,7 @@ import random
 from statistics import mean
 from openai import AsyncOpenAI
 from typing import List, Tuple
+from tqdm import tqdm
 
 # === seed固定 ===
 random.seed(42)
@@ -90,16 +91,17 @@ async def worker(
     job_manager: JobQueueManager,
     prompt_tokens: int,
     output_tokens: int,
+    prompts: List[str],
     results: List[Tuple[float, int, int]],
     errors: List[str],
 ):
     while True:
         try:
-            _ = job_manager.queue.get_nowait()
+            rid = job_manager.queue.get_nowait()
         except asyncio.QueueEmpty:
             break
 
-        prompt = make_prompt(prompt_tokens)
+        prompt = prompts[rid]
         try:
             async with sem:
                 t0 = time.perf_counter()
@@ -175,6 +177,12 @@ async def run_benchmark(
 
     job_manager = JobQueueManager(total_requests)
 
+    prompts = []
+    print("Prebuilding prompts...")
+    for _ in tqdm(range(total_requests), ncols=80, desc="Prompts"):
+        prompts.append(make_prompt(prompt_tokens))
+    print(f"Generated {len(prompts)} prompts.\n")
+
     # ウォームアップ
     await client.chat.completions.create(
         model=model,
@@ -188,7 +196,7 @@ async def run_benchmark(
         asyncio.create_task(
             worker(
                 client, model, sem, job_manager,
-                prompt_tokens, output_tokens,
+                prompt_tokens, output_tokens, prompts,
                 results, errors
             )
         )
