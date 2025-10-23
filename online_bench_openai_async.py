@@ -2,13 +2,18 @@ import argparse
 import asyncio
 import time
 import random
+import os
+import multiprocessing as mp
 from statistics import mean
 from openai import AsyncOpenAI
 from typing import List, Tuple
 from tqdm import tqdm
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
-# === seed固定 ===
-random.seed(42)
+# === seed生成 ===
+def _worker_init():
+    seed = (os.getpid() << 32) ^ time.time_ns()
+    random.seed(seed)
 
 # === ユーティリティ関数 ===
 def make_prompt(prompt_tokens: int) -> str:
@@ -177,10 +182,14 @@ async def run_benchmark(
 
     job_manager = JobQueueManager(total_requests)
 
-    prompts = []
     print("Prebuilding prompts...")
-    for _ in tqdm(range(total_requests), ncols=80, desc="Prompts"):
-        prompts.append(make_prompt(prompt_tokens))
+    ctx = mp.get_context("spawn")
+    prompts = [None] * total_requests
+    with ProcessPoolExecutor(max_workers=os.cpu_count(), mp_context=ctx, initializer=_worker_init) as ex:
+        futures = {ex.submit(make_prompt, prompt_tokens): i for i in range(total_requests)}
+        for f in tqdm(as_completed(futures), total=total_requests, ncols=80, desc="Prompts"):
+            i = futures[f]
+            prompts[i] = f.result()
     print(f"Generated {len(prompts)} prompts.\n")
 
     # ウォームアップ
