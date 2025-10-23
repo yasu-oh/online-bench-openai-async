@@ -185,7 +185,8 @@ async def run_benchmark(
     print("Prebuilding prompts...")
     ctx = mp.get_context("spawn")
     prompts = [None] * total_requests
-    with ProcessPoolExecutor(max_workers=os.cpu_count(), mp_context=ctx, initializer=_worker_init) as ex:
+    workers = min(os.cpu_count(), total_requests)
+    with ProcessPoolExecutor(max_workers=workers, mp_context=ctx, initializer=_worker_init) as ex:
         futures = {ex.submit(make_prompt, prompt_tokens): i for i in range(total_requests)}
         for f in tqdm(as_completed(futures), total=total_requests, ncols=80, desc="Prompts"):
             i = futures[f]
